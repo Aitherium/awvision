@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "1",
+  "name": "awvision",
+  "description": "See an image — describe it, ask it a question, compare two.",
+  "url": "https://aitherium.github.io/awvision/",
+  "repository": "https://github.com/Aitherium/awvision",
+  "kind": "tool",
+  "status": "planned",
+  "adopt": "Ask a question about an image and get an answer.",
+  "pairs_with": [
+    "awdk",
+    "awbrowse",
+    "awscreen"
+  ],
+  "includes": [],
+  "speaks_to": "any vision-shaped service"
+}
