@@ -4,12 +4,13 @@ import json
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
 import pytest
 from awvision.vision import (
-    load_image_as_base64,
+    compare_vision_images,
     get_media_type,
     get_vision_response,
-    compare_vision_images
+    load_image_as_base64,
 )
 
 

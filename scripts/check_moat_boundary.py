@@ -59,7 +59,10 @@ _INTERNAL = (
 
 #: Modules whose ABSENCE means the artifact is broken regardless of how clean it
 #: scans. __init__ is the entry point; cli is the command-line interface.
-_KEYSTONES = ("awvision/__init__.py", "awvision/cli.py", "awvision/_doctor.py", "awvision/vision.py")
+_KEYSTONES = (
+    "awvision/__init__.py", "awvision/cli.py",
+    "awvision/_doctor.py", "awvision/vision.py",
+)
 
 
 class CouldNotJudgeError(Exception):

@@ -128,18 +128,27 @@ def _make_vision_request(endpoint: str, model: str, payload: dict) -> str:
     except HTTPError as e:
         if e.code == 404:
             raise RuntimeError(
-                f"Vision endpoint not found at {url}\nMake sure the vision service is running at {endpoint}"
-            )
+                f"Vision endpoint not found at {url}\n"
+                f"Make sure the vision service is running at {endpoint}")
         elif e.code == 401:
-            raise RuntimeError(f"Authentication failed at {url}\nCheck your credentials or API key")
+            raise RuntimeError(
+                f"Authentication failed at {url}\n"
+                f"Check your credentials or API key")
         else:
-            raise RuntimeError(f"Vision service returned HTTP {e.code}\nURL: {url}")
+            raise RuntimeError(
+                f"Vision service returned HTTP {e.code}\nURL: {url}")
     except URLError:
-        raise RuntimeError(f"Cannot reach vision service at {endpoint}\nMake sure the service is running and accessible")
+        raise RuntimeError(
+            f"Cannot reach vision service at {endpoint}\n"
+            f"Make sure the service is running and accessible")
     except json.JSONDecodeError as e:
-        raise RuntimeError(f"Vision service returned invalid JSON\nResponse was not valid JSON: {e}")
+        raise RuntimeError(
+            f"Vision service returned invalid JSON\n"
+            f"Response was not valid JSON: {e}")
     if not isinstance(response_data, dict):
-        raise RuntimeError(f"Vision service returned unexpected response type: {type(response_data)}\nExpected JSON object")
+        raise RuntimeError(
+            f"Vision service returned unexpected response type: "
+            f"{type(response_data)}\nExpected JSON object")
     if "error" in response_data:
         error_msg = response_data.get("error", {})
         if isinstance(error_msg, dict):
@@ -148,17 +157,27 @@ def _make_vision_request(endpoint: str, model: str, payload: dict) -> str:
     choices = response_data.get('choices')
     if not choices or not isinstance(choices, list) or len(choices) == 0:
         raise RuntimeError(
-            f"Model '{model}' at {endpoint} returned an empty choices list.\nThis typically means the model does not support vision or the request was invalid."
-        )
+            f"Model '{model}' at {endpoint} returned an empty choices list.\n"
+            f"This typically means the model does not support vision or the "
+            f"request was invalid.")
     first_choice = choices[0]
     if not isinstance(first_choice, dict):
-        raise RuntimeError(f"Model '{model}' returned unexpected choice structure")
+        raise RuntimeError(
+            f"Model '{model}' returned unexpected choice structure")
     message = first_choice.get('message')
     if not message or not isinstance(message, dict):
-        raise RuntimeError(f"Model '{model}' returned no message in response.\nThis typically means the model does not support vision or cannot process images.")
+        raise RuntimeError(
+            f"Model '{model}' returned no message in response.\n"
+            f"This typically means the model does not support vision or cannot "
+            f"process images.")
     content = message.get('content', '')
     if not content or (isinstance(content, str) and content.isspace()):
         raise RuntimeError(
-            f"Model '{model}' at {endpoint} returned empty content.\nThis indicates the model does not support vision or cannot process image_url content blocks.\nVerify that:\n  1. The model '{model}' is vision-capable\n  2. The endpoint supports the image_url format\n  3. The image was properly encoded as a data URL"
-        )
+            f"Model '{model}' at {endpoint} returned empty content.\n"
+            f"This indicates the model does not support vision or cannot "
+            f"process image_url content blocks.\n"
+            f"Verify that:\n"
+            f"  1. The model '{model}' is vision-capable\n"
+            f"  2. The endpoint supports the image_url format\n"
+            f"  3. The image was properly encoded as a data URL")
     return content
