@@ -54,15 +54,13 @@ def main():
         return 1
 
     try:
-        from awvision.vision import compare_vision_images, get_vision_response
+        from awvision.vision import get_vision_response, compare_vision_images
 
         if args.command == 'ask':
             response = get_vision_response(args.image, args.question, args.endpoint, args.model)
             print(response)
         elif args.command == 'describe':
-            response = get_vision_response(
-                args.image, 'Describe this image in detail.',
-                args.endpoint, args.model)
+            response = get_vision_response(args.image, 'Describe this image in detail.', args.endpoint, args.model)
             print(response)
         elif args.command == 'compare':
             response = compare_vision_images(args.image_a, args.image_b, args.endpoint, args.model)
@@ -107,11 +105,8 @@ def run_self_test():
     finally:
         try:
             Path(test_image).unlink()
-        except OSError as exc:
-            # Best-effort cleanup of a temp image: a failed unlink must not
-            # turn a passing self-test into a failure, but it must not vanish
-            # silently either — say what happened.
-            print(f"  warn: could not remove test image: {exc}")
+        except Exception:
+            pass
 
     # Test 2: Check missing file detection
     print("  [2/6] Missing file detection...", end=' ', flush=True)
