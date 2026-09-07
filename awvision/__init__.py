@@ -10,8 +10,8 @@ def ask_vision(image_path: str, question: str, endpoint=None, model=None):
     Args:
         image_path: Path to the image file
         question: Question to ask about the image
-        endpoint: Vision API endpoint (default: env AWVISION_URL or http://localhost:8150)
-        model: Model name (default: env AWVISION_MODEL or gpt-4-vision)
+        endpoint: Vision API endpoint (default: env AWVISION_URL or http://100.64.0.38:8124)
+        model: Model name (default: env AWVISION_MODEL or gemma4-12b)
 
     Returns:
         The model's response

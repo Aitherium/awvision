@@ -9,6 +9,20 @@ from pathlib import Path
 
 def main():
     """Main CLI entry point."""
+    # GENERATED doctor intercept (gen_aw_doctor.py) -- do not edit
+    _dv = locals().get("argv")
+    if (_dv if _dv is not None else __import__("sys").argv[1:])[:1] == ["doctor"]:
+        from ._doctor import report
+        return report()
+    # GENERATED repo-state intercept (gen_aw_doctor.py) -- do not edit
+    try:
+        from awgit import state as _aw_state
+    except Exception:
+        _aw_state = None
+    if _aw_state is not None:
+        _sv = locals().get("argv")
+        if _aw_state.cli_banner(_sv if _sv is not None else __import__("sys").argv[1:]):
+            return 0
     parser = argparse.ArgumentParser(
         description='Ask questions about images using a vision-capable model'
     )
@@ -20,12 +34,12 @@ def main():
     parser.add_argument(
         '--endpoint',
         default=None,
-        help='Vision API endpoint (env: AWVISION_URL, default: http://localhost:8150)'
+        help='Vision API endpoint (env: AWVISION_URL, default: http://100.64.0.38:8124 — fleet DGX gemma4-12b)'
     )
     parser.add_argument(
         '--model',
         default=None,
-        help='Model name (env: AWVISION_MODEL, default: gpt-4-vision)'
+        help='Model name (env: AWVISION_MODEL, default: gemma4-12b)'
     )
 
     subparsers = parser.add_subparsers(dest='command', help='Command to run')
@@ -151,8 +165,8 @@ def run_self_test():
     # Test 5: Check endpoint configuration
     print("  [5/6] Endpoint configuration...", end=' ', flush=True)
     try:
-        endpoint = os.getenv('AWVISION_URL', 'http://localhost:8150')
-        model = os.getenv('AWVISION_MODEL', 'gpt-4-vision')
+        endpoint = os.getenv('AWVISION_URL', 'http://100.64.0.38:8124')
+        model = os.getenv('AWVISION_MODEL', 'gemma4-12b')
         assert endpoint, "Endpoint not configured"
         assert model, "Model not configured"
         print("ok")
@@ -172,7 +186,7 @@ def run_self_test():
 
     print()
     print("All self-tests passed!")
-    endpoint = os.getenv('AWVISION_URL', 'http://localhost:8150')
+    endpoint = os.getenv('AWVISION_URL', 'http://100.64.0.38:8124')
     print(f"To use awvision, ensure a vision-capable service is running at {endpoint}")
     print()
     print("Examples:")

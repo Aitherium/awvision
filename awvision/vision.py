@@ -38,9 +38,12 @@ def get_media_type(image_path: str) -> str:
 def get_vision_response(image_path: str, question: str, endpoint=None, model=None):
     """Send image + question to vision model and get response."""
     if endpoint is None:
-        endpoint = os.getenv('AWVISION_URL', 'http://localhost:8150')
+        # Default: the fleet's gemma4-12b vision lane on the DGX Spark
+        # (mesh address per AitherOS/config/claude_bridge.yaml). Override
+        # with AWVISION_URL for any other OpenAI-compatible vision endpoint.
+        endpoint = os.getenv('AWVISION_URL', 'http://100.64.0.38:8124')
     if model is None:
-        model = os.getenv('AWVISION_MODEL', 'gpt-4-vision')
+        model = os.getenv('AWVISION_MODEL', 'gemma4-12b')
     image_b64 = load_image_as_base64(image_path)
     media_type = get_media_type(image_path)
     payload = {
@@ -69,9 +72,9 @@ def get_vision_response(image_path: str, question: str, endpoint=None, model=Non
 def compare_vision_images(image_a: str, image_b: str, endpoint=None, model=None):
     """Compare two images using a vision model."""
     if endpoint is None:
-        endpoint = os.getenv('AWVISION_URL', 'http://localhost:8150')
+        endpoint = os.getenv('AWVISION_URL', 'http://100.64.0.38:8124')
     if model is None:
-        model = os.getenv('AWVISION_MODEL', 'gpt-4-vision')
+        model = os.getenv('AWVISION_MODEL', 'gemma4-12b')
     img_a_b64 = load_image_as_base64(image_a)
     img_b_b64 = load_image_as_base64(image_b)
     media_type_a = get_media_type(image_a)
