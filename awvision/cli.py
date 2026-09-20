@@ -58,6 +58,39 @@ def main():
     comp_parser.add_argument('image_a', help='First image path')
     comp_parser.add_argument('image_b', help='Second image path')
 
+    # see command -- one look at a source you name, optionally into the room
+    see_parser = subparsers.add_parser(
+        'see', help='Look once at an image, the screen or a camera and say what is there')
+    see_parser.add_argument('image', nargs='?', help='Path to an image file')
+    see_parser.add_argument('--screen', action='store_true', help='Look at this screen')
+    see_parser.add_argument('--rtsp', default=None, help='Look at one frame of an RTSP camera')
+    see_parser.add_argument('--device', default=None, help='Look through a capture device, by name')
+    see_parser.add_argument('--prompt', default=None, help='What to ask about the frame')
+    see_parser.add_argument('--publish', action='store_true',
+                            help='Publish a sight_observed event (text + frame hash) to the room')
+    see_parser.add_argument('--say', action='store_true',
+                            help='Also say it: one short agent_message into room main')
+    see_parser.add_argument('--room', default='sight', help='Room for the sight event')
+    see_parser.add_argument('--node-id', dest='node_id', default='', help='Which node saw it')
+    see_parser.add_argument('--json', action='store_true', help='Print the observation as JSON')
+
+    # watch command -- keep looking, but only when the picture changes
+    watch_parser = subparsers.add_parser(
+        'watch', help='Keep watching a source you name; look only when the picture changes')
+    watch_parser.add_argument('--source', default='',
+                              help='screen | rtsp://... | device:NAME | an image path')
+    watch_parser.add_argument('--every', type=float, default=2.0, help='Seconds between grabs')
+    watch_parser.add_argument('--threshold', type=float, default=6.0,
+                              help='Mean grayscale change (0-255) that counts as changed')
+    watch_parser.add_argument('--max-looks', dest='max_looks', type=int, default=0,
+                              help='Stop after this many looks (0 = until Ctrl+C)')
+    watch_parser.add_argument('--prompt', default=None, help='What to ask about each frame')
+    watch_parser.add_argument('--publish', action='store_true', help='Publish each observation')
+    watch_parser.add_argument('--say', action='store_true', help='Say each observation in the room')
+    watch_parser.add_argument('--room', default='sight', help='Room for the sight events')
+    watch_parser.add_argument('--node-id', dest='node_id', default='', help='Which node is watching')
+    watch_parser.add_argument('--json', action='store_true', help='Print observations as JSON')
+
     args = parser.parse_args()
 
     if args.self_test:
@@ -66,6 +99,11 @@ def main():
     if not args.command:
         parser.print_help()
         return 1
+
+    if args.command in ('see', 'watch'):
+        from awvision import sight
+
+        return sight.cmd_see(args) if args.command == 'see' else sight.cmd_watch(args)
 
     try:
         from awvision.vision import get_vision_response, compare_vision_images
