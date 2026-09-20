@@ -50,6 +50,29 @@ awvision describe image.jpg
 awvision compare image1.png image2.png
 ```
 
+### See, watch and forget (sight)
+
+```bash
+awvision see photo.jpg --publish          # one look, one sight_observed event (text + hash)
+awvision watch --source screen --say      # keep looking; look only when the picture changes
+```
+
+**No frame is kept, by default.** A captured frame lives in a temp file for one look and
+is deleted; the event carries its sha256, never pixels. The one opt-in:
+
+```bash
+awvision watch --source cam.jpg --keep-frames   # copies each looked-at frame to Strata cache
+awvision forget --all                           # the purge verb; --older-than HOURS also works
+```
+
+A kept frame goes ONLY to `aither://cache/vision/sight/<sha256>.jpg`, the Strata tier
+declared ephemeral (auto-deleted after 24 h). A frame from a live source (`--screen`,
+`--rtsp`, `--device`) goes only to the AES-256-GCM private vault, or is not kept. The
+watch banner says `KEEPING FRAMES -> <uri>` and `~/.aither/sight/status.json` carries
+`keeping` / `kept_count` whenever a keep is on -- silence never means "keeping".
+`AWVISION_KEEP_FRAMES=0` refuses every keep on this host; `AWVISION_SIGHT=0` refuses to
+watch at all.
+
 ## Configuration
 
 Set environment variables to customize the endpoint and model:

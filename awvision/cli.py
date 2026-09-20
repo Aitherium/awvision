@@ -34,7 +34,8 @@ def main():
     parser.add_argument(
         '--endpoint',
         default=None,
-        help='Vision API endpoint (env: AWVISION_URL, default: http://100.64.0.38:8124 — fleet DGX gemma4-12b)'
+        help='Vision API endpoint (env: AWVISION_URL, default: http://100.64.0.38:8124 '
+             '— fleet DGX gemma4-12b)'
     )
     parser.add_argument(
         '--model',
@@ -73,6 +74,10 @@ def main():
     see_parser.add_argument('--room', default='sight', help='Room for the sight event')
     see_parser.add_argument('--node-id', dest='node_id', default='', help='Which node saw it')
     see_parser.add_argument('--json', action='store_true', help='Print the observation as JSON')
+    see_parser.add_argument('--keep-frames', dest='keep_frames', action='store_true',
+                            help='Opt in: copy the frame to Strata cache (auto-deleted after 24h; '
+                                 'a live source goes only to the private vault). Default: never. '
+                                 'AWVISION_KEEP_FRAMES=0 refuses on this host.')
 
     # watch command -- keep looking, but only when the picture changes
     watch_parser = subparsers.add_parser(
@@ -88,8 +93,23 @@ def main():
     watch_parser.add_argument('--publish', action='store_true', help='Publish each observation')
     watch_parser.add_argument('--say', action='store_true', help='Say each observation in the room')
     watch_parser.add_argument('--room', default='sight', help='Room for the sight events')
-    watch_parser.add_argument('--node-id', dest='node_id', default='', help='Which node is watching')
+    watch_parser.add_argument('--node-id', dest='node_id', default='',
+                              help='Which node is watching')
     watch_parser.add_argument('--json', action='store_true', help='Print observations as JSON')
+    watch_parser.add_argument('--max-ticks', dest='max_ticks', type=int, default=0,
+                              help='Stop after this many grabs (0 = until Ctrl+C)')
+    watch_parser.add_argument('--keep-frames', dest='keep_frames', action='store_true',
+                              help='Opt in: copy each looked-at frame to Strata cache '
+                                   '(auto-deleted after 24h; a live source goes only to the '
+                                   'private vault). Default: never. AWVISION_KEEP_FRAMES=0 '
+                                   'refuses on this host.')
+
+    # forget command -- the purge verb for frames kept with --keep-frames
+    forget_parser = subparsers.add_parser(
+        'forget', help='Delete kept frames from Strata (--all or --older-than HOURS)')
+    forget_parser.add_argument('--all', action='store_true', help='Forget every kept frame')
+    forget_parser.add_argument('--older-than', dest='older_than', type=float, default=None,
+                               metavar='HOURS', help='Forget frames older than this many hours')
 
     args = parser.parse_args()
 
@@ -100,19 +120,24 @@ def main():
         parser.print_help()
         return 1
 
-    if args.command in ('see', 'watch'):
+    if args.command in ('see', 'watch', 'forget'):
         from awvision import sight
 
-        return sight.cmd_see(args) if args.command == 'see' else sight.cmd_watch(args)
+        if args.command == 'see':
+            return sight.cmd_see(args)
+        if args.command == 'watch':
+            return sight.cmd_watch(args)
+        return sight.cmd_forget(args)
 
     try:
-        from awvision.vision import get_vision_response, compare_vision_images
+        from awvision.vision import compare_vision_images, get_vision_response
 
         if args.command == 'ask':
             response = get_vision_response(args.image, args.question, args.endpoint, args.model)
             print(response)
         elif args.command == 'describe':
-            response = get_vision_response(args.image, 'Describe this image in detail.', args.endpoint, args.model)
+            response = get_vision_response(args.image, 'Describe this image in detail.',
+                                           args.endpoint, args.model)
             print(response)
         elif args.command == 'compare':
             response = compare_vision_images(args.image_a, args.image_b, args.endpoint, args.model)
@@ -157,8 +182,8 @@ def run_self_test():
     finally:
         try:
             Path(test_image).unlink()
-        except Exception:
-            pass
+        except OSError as exc:
+            print(f"  (temp image left behind: {exc})")
 
     # Test 2: Check missing file detection
     print("  [2/6] Missing file detection...", end=' ', flush=True)

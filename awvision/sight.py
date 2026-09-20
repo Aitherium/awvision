@@ -17,9 +17,16 @@ The rules this module is built around:
   actually sent) and never more often than ``max(floor, 2 x the last look's latency)``.
   Measured 2026-09-19 against a 12B vision model: 17 s cold, 6.5 s warm -- an unpaced
   loop would queue looks forever.
-* **No frame is kept.** A captured frame lives in a temp file for the length of one
-  look and is deleted; the event carries its sha256 so two observations of one frame
-  can be told apart without the frame existing anywhere.
+* **No frame is kept, by default.** A captured frame lives in a temp file for the length
+  of one look and is deleted; the event carries its sha256 so two observations of one
+  frame can be told apart without the frame existing anywhere. The ONE opt-in is
+  ``--keep-frames`` (host-refusable with ``AWVISION_KEEP_FRAMES=0``), decided in exactly
+  one place, ``keep_policy``, and a keep is a COPY to Strata's ``cache`` tier -- which
+  strata.yaml declares ephemeral (``cleanup.max_age_hours: 24``) -- never a local path.
+  A frame from a live source (webcam / rtsp / screen) goes only to the AES-256-GCM
+  private vault, or is not kept at all. ``awvision forget`` is the purge verb. The
+  default is asserted by ``dev/tools/check_sight_frame_retention.py``, not by this
+  paragraph.
 * **Silence is not a pass.** ``~/.aither/sight/status.json`` moves ``last_publish_at``
   only on a real publish, so a watcher that captures happily and publishes nothing reads
   as exactly that.
@@ -51,6 +58,20 @@ DEFAULT_PROMPT = (
 SPEAKABLE_LIMIT = 220  # the desk stage voices an agent_message only up to this length
 DIFF_THRESHOLD = 6.0   # mean abs grayscale difference (0..255) that counts as "changed"
 LOOK_FLOOR_S = 10.0
+
+# Keeping frames. The CLI flag is the consent record (same as the watch itself); the env
+# is the host-level refusal, mirroring KILL_ENV above. Destinations are Strata virtual
+# paths ONLY: `cache` is the tier strata.yaml declares ephemeral (tiers.cache.cleanup
+# max_age_hours: 24, the same lane AitherVision's own opt-in image save uses), and the
+# private vault (private_vault.path: lockbox/private, AES-256-GCM) is the only place a
+# frame from a LIVE source may go. A local directory is never a destination.
+KEEP_ENV = "AWVISION_KEEP_FRAMES"
+KEEP_TTL_S = 24 * 3600
+KEEP_PREFIX = "aither://cache/vision/sight/"
+VAULT_PREFIX = "aither://lockbox/private/vision/sight/"
+LIVE_SOURCE_KINDS = ("webcam", "rtsp", "screen")
+# The keys a sight event may never carry -- the gate (SFR004) and the test both pin it.
+FORBIDDEN_PAYLOAD_KEYS = frozenset({"image", "frame", "data", "base64", "pixels", "jpeg"})
 
 
 # ── pure helpers ─────────────────────────────────────────────────────────────
@@ -110,9 +131,11 @@ def speakable(text: str, limit: int = SPEAKABLE_LIMIT) -> str:
 
 
 def sight_event(text: str, *, source_kind: str, node_id: str, sha256: str, model: str,
-                latency_ms: int, changed: bool, diff: float, room: str = "sight") -> dict:
+                latency_ms: int, changed: bool, diff: float, room: str = "sight",
+                kept: bool = False, kept_ttl_s: int = 0) -> dict:
     """The room event. TEXT and a HASH only -- a payload key that could carry pixels
-    (image/frame/data/base64) is never set here, and the test pins that."""
+    (image/frame/data/base64) is never set here, and the test pins that. ``kept`` lets
+    the room SAY a frame is being kept (and for how long) without ever carrying one."""
     return {
         "room": room,
         "type": "sight_observed",
@@ -126,6 +149,8 @@ def sight_event(text: str, *, source_kind: str, node_id: str, sha256: str, model
             "latency_ms": int(latency_ms),
             "changed": bool(changed),
             "diff": round(float(diff), 2),
+            "kept": bool(kept),
+            "kept_ttl_s": int(kept_ttl_s) if kept else 0,
         },
     }
 
@@ -197,8 +222,153 @@ def write_status(**fields) -> None:
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(current, indent=1), encoding="utf-8")
         os.replace(tmp, path)
-    except OSError:
-        pass
+    except OSError as exc:
+        # Best-effort by design, but a status file nobody can write is worth one line:
+        # a watcher reading a stale status would otherwise believe it.
+        print(f"! status not written ({path}): {exc}", file=sys.stderr)
+
+
+def read_status() -> dict:
+    path = status_path()
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, ValueError):
+        return {}
+
+
+# ── keeping (opt-in) ─────────────────────────────────────────────────────────
+
+class StrataError(RuntimeError):
+    """Strata could not be reached or refused. Never mistaken for 'nothing there'."""
+
+
+class StrataClient:
+    """The Strata wire contract, standard library only.
+
+    Mirrors what ``lib/clients/strata.py`` sends (this brick cannot import it):
+    ``POST /strata/write`` with base64 content and a tier, ``GET /strata/list?path=``
+    answering ``{"entries": [...]}``, ``DELETE /strata/delete?path=``. Auth is the
+    fleet's ``X-Internal-Key``. Any object with ``write`` / ``list`` / ``delete`` /
+    ``vault_unlocked`` is accepted where a client is injected -- the tests use a fake,
+    and no live call is part of the proof.
+    """
+
+    def __init__(self, env: Optional[dict] = None, opener: Callable = urlopen,
+                 timeout: float = 20.0):
+        env = os.environ if env is None else env
+        self.base = str(env.get("AITHER_STRATA_URL") or "http://127.0.0.1:8136").rstrip("/")
+        self.key = str(env.get("AITHER_INTERNAL_SECRET") or "")
+        self._opener = opener
+        self._timeout = timeout
+
+    def _call(self, method: str, path: str, body: Optional[dict] = None,
+              ok_404: bool = False) -> dict:
+        headers = {"Content-Type": "application/json"}
+        if self.key:
+            headers["X-Internal-Key"] = self.key
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        req = Request(self.base + path, data=data, headers=headers, method=method)
+        try:
+            with self._opener(req, timeout=self._timeout) as resp:
+                return json.loads(resp.read().decode("utf-8") or "{}")
+        except HTTPError as exc:
+            if ok_404 and exc.code == 404:
+                return {}
+            raise StrataError(f"{method} {path}: HTTP {exc.code}") from exc
+        except (URLError, OSError, ValueError) as exc:
+            raise StrataError(f"{method} {path}: {exc}") from exc
+
+    def write(self, path: str, data: bytes, tier: str) -> bool:
+        import base64
+        body = {"path": path, "content": base64.b64encode(data).decode("ascii"),
+                "tier": tier, "file_type": "image", "tags": ["vision", "sight"],
+                "metadata": {"ttl_s": KEEP_TTL_S}}
+        self._call("POST", "/strata/write", body)
+        return True
+
+    def list(self, prefix: str) -> list:
+        """``[{"path": ..., "modified": ...}, ...]`` for the FILES under ``prefix``. A
+        prefix that was never written lists as empty; an unreachable Strata raises."""
+        from urllib.parse import quote
+        out = self._call("GET", "/strata/list?path=" + quote(prefix, safe=""), ok_404=True)
+        files = []
+        for entry in out.get("entries") or []:
+            if entry.get("type") == "directory":
+                continue
+            vpath = entry.get("virtual_path") or entry.get("path") or ""
+            if vpath.startswith("aither:/") and not vpath.startswith("aither://"):
+                vpath = "aither://" + vpath[len("aither:/"):]
+            if not vpath:
+                vpath = prefix.rstrip("/") + "/" + str(entry.get("name", ""))
+            files.append({"path": vpath, "modified": entry.get("modified")})
+        return files
+
+    def delete(self, path: str) -> bool:
+        from urllib.parse import quote
+        self._call("DELETE", "/strata/delete?path=" + quote(path, safe=""))
+        return True
+
+    def vault_unlocked(self) -> bool:
+        """True ONLY when Strata says the private vault is open. The service exposes no
+        such answer today, so this is False on the live fleet and a live-source keep is
+        refused -- the fail-closed branch, by design."""
+        try:
+            out = self._call("GET", "/lockbox/private/status", ok_404=True)
+        except StrataError:
+            return False
+        return out.get("unlocked") is True or out.get("locked") is False
+
+
+def keep_refused(env: Optional[dict] = None) -> bool:
+    """True when this host refuses to keep frames (``AWVISION_KEEP_FRAMES=0``)."""
+    env = os.environ if env is None else env
+    return str(env.get(KEEP_ENV, "")).strip().lower() in ("0", "off", "false", "no")
+
+
+def keep_policy(args, source_kind: str, env: Optional[dict] = None, *,
+                sha256: str = "<sha256>",
+                vault_unlocked: Optional[Callable[[], bool]] = None) -> tuple:
+    """THE chokepoint: ``(allowed, destination_uri, reason)``.
+
+    Refuses unless ``--keep-frames`` was passed AND the host has not said no. The
+    destination is always a Strata URI: the ephemeral ``cache`` tier, or -- for a frame
+    from a live source -- the private vault, and only when ``vault_unlocked()`` says it
+    is open (``None`` = nobody asked = locked). ``env={}`` with no flag is the default,
+    and the gate proves it by CALLING this, never by reading it.
+    """
+    env = os.environ if env is None else env
+    if not getattr(args, "keep_frames", False):
+        return False, "", "not kept: --keep-frames was not passed"
+    if keep_refused(env):
+        return False, "", f"not kept: {KEEP_ENV}=0 refuses on this host"
+    if source_kind in LIVE_SOURCE_KINDS:
+        if vault_unlocked is None or not vault_unlocked():
+            return False, "", ("not kept: a live-source frame goes only to the private "
+                               "vault, and the vault is locked")
+        return True, VAULT_PREFIX + sha256 + ".jpg", "kept in the private vault (AES-256-GCM)"
+    return True, KEEP_PREFIX + sha256 + ".jpg", "kept in Strata cache; auto-deleted after 24h"
+
+
+def keep_frame(frame: str, args, source_kind: str, sha256: str, *,
+               client=None, env: Optional[dict] = None) -> tuple:
+    """Copy one frame to its Strata destination, if ``keep_policy`` allows.
+
+    ``(kept, uri, reason)``. Called INSIDE the capture ``try`` so the temp frame dies
+    in the ``finally`` whatever happens here: a failed copy is a reason, not a leak.
+    """
+    client = client if client is not None else StrataClient(env)
+    allowed, uri, reason = keep_policy(args, source_kind, env, sha256=sha256,
+                                       vault_unlocked=client.vault_unlocked)
+    if not allowed:
+        return False, "", reason
+    tier = "lockbox" if uri.startswith(VAULT_PREFIX) else "cache"
+    try:
+        with open(frame, "rb") as fh:
+            data = fh.read()
+        client.write(uri, data, tier)
+    except (OSError, StrataError) as exc:
+        return False, "", f"not kept: the copy to Strata failed ({exc})"
+    return True, uri, reason
 
 
 # ── capture ──────────────────────────────────────────────────────────────────
@@ -291,8 +461,11 @@ def _node_id(args) -> str:
 
 
 def observe(source: str, args, *, prev_sig=None, publish_fn: Callable = publish,
-            look_fn: Callable = look, capture_fn: Callable = capture) -> dict:
-    """Capture -> look -> (publish). Returns the observation; the temp frame is deleted."""
+            look_fn: Callable = look, capture_fn: Callable = capture,
+            strata_client=None) -> dict:
+    """Capture -> look -> (keep) -> (publish). Returns the observation; the temp frame
+    is deleted in the ``finally`` whatever else happened -- a keep is a COPY made before
+    it, never a reason to skip it."""
     tmp_dir = tempfile.mkdtemp(prefix="awvision-sight-")
     try:
         frame = capture_fn(source, os.path.join(tmp_dir, "frame.jpg"))
@@ -300,18 +473,30 @@ def observe(source: str, args, *, prev_sig=None, publish_fn: Callable = publish,
         diff = frame_diff(prev_sig, sig) if prev_sig is not None else 255.0
         text, latency_ms = look_fn(frame, getattr(args, "prompt", None) or DEFAULT_PROMPT,
                                    getattr(args, "endpoint", None), getattr(args, "model", None))
+        sha = sha256_file(frame)
+        kind = source_kind(source)
+        kept, kept_at, keep_reason = keep_frame(frame, args, kind, sha, client=strata_client)
         obs = {
             "text": text, "latency_ms": latency_ms, "diff": diff, "signature": sig,
-            "sha256": sha256_file(frame), "source_kind": source_kind(source),
+            "sha256": sha, "source_kind": kind,
+            "kept": kept, "kept_at": kept_at or None, "kept_ttl_s": KEEP_TTL_S if kept else 0,
+            "keep_reason": keep_reason,
             "published": None, "said": None,
         }
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+    if kept:
+        write_status(keeping=kept_at, kept_ttl_s=KEEP_TTL_S,
+                     kept_count=int(read_status().get("kept_count") or 0) + 1)
+    elif getattr(args, "keep_frames", False):
+        # Asked to keep and could not: say so where a watcher looks, never silently.
+        write_status(keeping=None, keep_refused=keep_reason)
     model = getattr(args, "model", None) or os.environ.get("AWVISION_MODEL", "gemma4-12b")
     if getattr(args, "publish", False) or getattr(args, "say", False):
         event = sight_event(text, source_kind=obs["source_kind"], node_id=_node_id(args),
                             sha256=obs["sha256"], model=model, latency_ms=latency_ms,
-                            changed=True, diff=diff, room=getattr(args, "room", "sight"))
+                            changed=True, diff=diff, room=getattr(args, "room", "sight"),
+                            kept=kept, kept_ttl_s=obs["kept_ttl_s"])
         obs["published"] = publish_fn(event)
         if getattr(args, "say", False):
             obs["said"] = publish_fn(say_event(text))
@@ -354,7 +539,8 @@ def cmd_see(args) -> int:
 
 
 def cmd_watch(args, *, sleep: Callable = time.sleep, clock: Callable = time.time,
-              observe_fn: Callable = observe, capture_fn: Callable = capture) -> int:
+              observe_fn: Callable = observe, capture_fn: Callable = capture,
+              strata_client=None) -> int:
     """Grab every ``--every`` seconds; LOOK only on change, paced by the last latency."""
     if kill_switch():
         write_status(refused="kill_switch")
@@ -369,9 +555,24 @@ def cmd_watch(args, *, sleep: Callable = time.sleep, clock: Callable = time.time
     threshold = float(getattr(args, "threshold", DIFF_THRESHOLD))
     max_looks = int(getattr(args, "max_looks", 0) or 0)
     max_ticks = int(getattr(args, "max_ticks", 0) or 0)
-    print(f"watching {source} -- ON AIR (Ctrl+C stops; {KILL_ENV}=0 refuses to start)",
-          file=sys.stderr)
-    write_status(watching=source, refused=None, started_at=clock())
+    # Silence must not be able to mean "keeping": the banner and the status file both
+    # say it, and a refused opt-in is printed rather than swallowed.
+    client = strata_client if strata_client is not None else StrataClient()
+    keeping, keep_dest, keep_reason = keep_policy(args, source_kind(source),
+                                                  vault_unlocked=client.vault_unlocked)
+    if keeping:
+        print(f"watching {source} -- ON AIR, KEEPING FRAMES -> {keep_dest} (expires in 24h; "
+              f"Ctrl+C stops; {KILL_ENV}=0 refuses to start)", file=sys.stderr)
+    else:
+        print(f"watching {source} -- ON AIR (Ctrl+C stops; {KILL_ENV}=0 refuses to start)",
+              file=sys.stderr)
+        if getattr(args, "keep_frames", False):
+            print(f"! {keep_reason}", file=sys.stderr)
+    write_status(watching=source, refused=None, started_at=clock(),
+                 keeping=keep_dest if keeping else None, kept_ttl_s=KEEP_TTL_S if keeping else 0,
+                 kept_count=0, keep_refused=None if keeping else
+                 (keep_reason if getattr(args, "keep_frames", False) else None))
+    observe_kw = {"strata_client": client} if strata_client is not None else {}
     last_sig, last_look_at, last_latency, looks, ticks, errors = None, 0.0, 0.0, 0, 0, 0
     try:
         while True:
@@ -394,7 +595,7 @@ def cmd_watch(args, *, sleep: Callable = time.sleep, clock: Callable = time.time
                 if errors == 0 and (first or should_look(diff, clock() - last_look_at,
                                                          last_latency, threshold=threshold)):
                     try:
-                        obs = observe_fn(source, args, prev_sig=last_sig)
+                        obs = observe_fn(source, args, prev_sig=last_sig, **observe_kw)
                         last_sig = obs.get("signature") or sig
                         last_latency = obs["latency_ms"] / 1000.0
                         last_look_at = clock()
@@ -408,7 +609,60 @@ def cmd_watch(args, *, sleep: Callable = time.sleep, clock: Callable = time.time
             # Back off on a dead source instead of hammering it: 2 s, 4 s, ... capped at 60 s.
             sleep(min(60.0, every * (2 ** min(errors, 5))) if errors else every)
     except KeyboardInterrupt:
-        pass
+        print("Ctrl+C -- stopping", file=sys.stderr)  # the normal way a watch ends
     write_status(watching=None, looks=looks)
     print(f"stopped after {looks} look(s) in {ticks} tick(s) -- OFF AIR", file=sys.stderr)
     return 0
+
+
+def _older_than(entry: dict, hours: float, now: float) -> Optional[bool]:
+    """True/False from the entry's ``modified`` stamp; None when there is no stamp."""
+    stamp = entry.get("modified")
+    if not stamp:
+        return None
+    try:
+        from datetime import datetime
+        modified = datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+    return (now - modified) >= hours * 3600.0
+
+
+def cmd_forget(args, *, strata_client=None, clock: Callable = time.time) -> int:
+    """The purge verb: delete every kept frame (``--all``) or those older than
+    ``--older-than H`` hours, print the count, zero the status. Exit 2 when Strata
+    cannot be asked -- "I could not look" is never "nothing to purge"."""
+    everything = bool(getattr(args, "all", False))
+    older = getattr(args, "older_than", None)
+    if not everything and older is None:
+        print("forget: say what to forget: --all, or --older-than HOURS", file=sys.stderr)
+        return 2
+    client = strata_client if strata_client is not None else StrataClient()
+    try:
+        entries = client.list(KEEP_PREFIX) + client.list(VAULT_PREFIX)
+    except StrataError as exc:
+        print(f"forget: could not list the kept frames ({exc}); nothing was judged.",
+              file=sys.stderr)
+        return 2
+    now = clock()
+    forgot, unjudged, failed = 0, 0, 0
+    for entry in entries:
+        if not everything:
+            verdict = _older_than(entry, float(older), now)
+            if verdict is None:
+                unjudged += 1   # no timestamp: never guess an age, never delete on a guess
+                continue
+            if not verdict:
+                continue
+        try:
+            client.delete(entry["path"])
+            forgot += 1
+        except StrataError as exc:
+            failed += 1
+            print(f"! could not delete {entry['path']}: {exc}", file=sys.stderr)
+    print(f"forgot {forgot} frame{'' if forgot == 1 else 's'}"
+          + (f" ({unjudged} without a timestamp left alone)" if unjudged else "")
+          + (f" ({failed} FAILED)" if failed else ""))
+    if everything and not failed:
+        write_status(kept_count=0, keeping=None)
+    return 1 if failed else 0

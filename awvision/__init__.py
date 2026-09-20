@@ -1,6 +1,6 @@
 """awvision - Ask questions about images using a vision-capable model."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = ["ask_vision", "describe_image", "compare_images"]
 
 
