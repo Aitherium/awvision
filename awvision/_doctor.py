@@ -24,7 +24,7 @@ import sys
 #: would go stale in silence. Regenerate to update.
 SELF = 'awvision'
 FAMILY = ['awask', 'awavatar', 'awbac', 'awbrain', 'awbrowse', 'awclassify', 'awdecide', 'awdeck', 'awdelphi', 'awdit', 'awembed', 'awevolve', 'awfind', 'awflow', 'awfocus', 'awgit', 'awgraph', 'awgym', 'awiam', 'awkno', 'awm', 'awmail', 'awmine', 'awnboard', 'awnest', 'awnet', 'awnode', 'awpool', 'awpredict', 'awprism', 'awprove', 'awreason', 'awrecover', 'awrecurse', 'awrelay', 'awrena', 'awrepl', 'awreport', 'awresearch', 'awrise', 'awrouter', 'awrtifact', 'awrun', 'awscreen', 'awseal', 'awsettings', 'awshare', 'awsprite', 'awstorage', 'awswarm', 'awtax', 'awtoll', 'awtunnel', 'awvoice', 'awwall', 'gawbbonet']
-PAIRS_WITH = ['awbrowse', 'adk', 'awscreen', 'awtax']
+PAIRS_WITH = ['awbrowse', 'adk', 'awnode', 'awscreen', 'awtax']
 
 #: This brick's OWN config, read out of its source at generation time.
 #: ENV_REQUIRED is `os.environ["X"]` -- absent, that is a KeyError the moment
