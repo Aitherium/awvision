@@ -3,6 +3,7 @@
 import base64
 import json
 import os
+import socket
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -116,8 +117,27 @@ def compare_vision_images(image_a: str, image_b: str, endpoint=None, model=None)
     return _make_vision_request(endpoint, model, payload)
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, "") or default)
+    except ValueError:
+        return default
+
+
 def _make_vision_request(endpoint: str, model: str, payload: dict) -> str:
-    """Make a request to the vision API."""
+    """Make a request to the vision API.
+
+    A reasoning-capable vision model (Bonsai-2) thinks before it answers, so an
+    uncapped request through MicroScheduler got max_tokens=1500 and outran the old fixed
+    60 s timeout (measured 2026-10-01). Both are now bounded and configurable:
+    AWVISION_MAX_TOKENS (default 512) and AWVISION_TIMEOUT seconds (default 180).
+    """
+    payload.setdefault("max_tokens", int(_env_float("AWVISION_MAX_TOKENS", 512)))
+    # Describing pixels needs no chain-of-thought; a thinking model answered the same
+    # image in 1 s with it off versus ~58 s on. AWVISION_THINKING=1 restores it.
+    if os.getenv("AWVISION_THINKING", "") not in ("1", "true", "on", "yes"):
+        payload.setdefault("chat_template_kwargs", {"enable_thinking": False})
+    timeout = _env_float("AWVISION_TIMEOUT", 180.0)
     url = f"{endpoint}/v1/chat/completions"
     req = Request(
         url,
@@ -126,8 +146,13 @@ def _make_vision_request(endpoint: str, model: str, payload: dict) -> str:
         method='POST'
     )
     try:
-        with urlopen(req, timeout=60) as response:
+        with urlopen(req, timeout=timeout) as response:
             response_data = json.loads(response.read().decode('utf-8'))
+    except (TimeoutError, socket.timeout):
+        raise RuntimeError(
+            f"Vision service at {endpoint} did not answer within {timeout:.0f}s. "
+            "Raise AWVISION_TIMEOUT, or lower AWVISION_MAX_TOKENS for a reasoning model"
+        )
     except HTTPError as e:
         if e.code == 404:
             raise RuntimeError(
