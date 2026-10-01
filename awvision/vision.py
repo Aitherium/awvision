@@ -36,15 +36,64 @@ def get_media_type(image_path: str) -> str:
     return media_type_map.get(suffix, 'image/jpeg')
 
 
+# Endpoint/model resolution when the caller names neither. The fixed default (a mesh
+# address) is unreachable from most machines, and the model it names may be parked;
+# so: AWVISION_URL if set, else the first candidate that answers /v1/models, and the
+# requested model if that endpoint serves it, else the first available vision model.
+_CANDIDATES = ("https://127.0.0.1:8150", "http://100.64.0.38:8124")
+_VISION_MODELS = ("gemma4-12b", "bonsai2-27b")
+_resolved: dict = {}
+
+
+def _list_models(endpoint: str, timeout: float = 10.0):
+    try:
+        with urlopen(f"{endpoint.rstrip('/')}/v1/models", timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001 - an unreachable candidate is simply skipped
+        return None
+    out = {}
+    for m in (data or {}).get("data") or []:
+        a = m.get("aither") or {}
+        healthy = a.get("backend_healthy", True) is not False
+        out[m.get("id")] = bool(a.get("available", True)) and healthy
+    return out
+
+
+def resolve_endpoint() -> str:
+    env = os.getenv("AWVISION_URL", "")
+    if env:
+        return env
+    if "endpoint" not in _resolved:
+        _resolved["endpoint"] = _CANDIDATES[-1]
+        for c in _CANDIDATES:
+            models = _list_models(c)
+            if models is not None:
+                _resolved["endpoint"], _resolved["models"] = c, models
+                break
+    return _resolved["endpoint"]
+
+
+def resolve_model(endpoint: str) -> str:
+    env = os.getenv("AWVISION_MODEL", "")
+    if env:
+        return env
+    if _resolved.get("endpoint") == endpoint:
+        models = _resolved.get("models")
+    else:
+        models = _list_models(endpoint)
+    if models:
+        for m in _VISION_MODELS:
+            if models.get(m):
+                return m
+    return _VISION_MODELS[0]
+
+
 def get_vision_response(image_path: str, question: str, endpoint=None, model=None):
     """Send image + question to vision model and get response."""
     if endpoint is None:
-        # Default: the fleet's gemma4-12b vision lane on the DGX Spark
-        # (mesh address per AitherOS/config/claude_bridge.yaml). Override
-        # with AWVISION_URL for any other OpenAI-compatible vision endpoint.
-        endpoint = os.getenv('AWVISION_URL', 'http://100.64.0.38:8124')
+        endpoint = resolve_endpoint()
     if model is None:
-        model = os.getenv('AWVISION_MODEL', 'gemma4-12b')
+        model = resolve_model(endpoint)
     image_b64 = load_image_as_base64(image_path)
     media_type = get_media_type(image_path)
     payload = {
@@ -73,9 +122,9 @@ def get_vision_response(image_path: str, question: str, endpoint=None, model=Non
 def compare_vision_images(image_a: str, image_b: str, endpoint=None, model=None):
     """Compare two images using a vision model."""
     if endpoint is None:
-        endpoint = os.getenv('AWVISION_URL', 'http://100.64.0.38:8124')
+        endpoint = resolve_endpoint()
     if model is None:
-        model = os.getenv('AWVISION_MODEL', 'gemma4-12b')
+        model = resolve_model(endpoint)
     img_a_b64 = load_image_as_base64(image_a)
     img_b_b64 = load_image_as_base64(image_b)
     media_type_a = get_media_type(image_a)
