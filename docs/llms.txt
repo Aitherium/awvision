@@ -1,0 +1,38 @@
+# awvision
+
+> See an image — describe it, ask it a question, compare two.
+
+An agent handed a screenshot, a scan or a photo has nothing to do with it. The information is right there and the agent is the one participant in the conversation that cannot look at it.
+
+## Install
+
+```
+pip install awvision
+```
+
+## In Claude Code
+
+- skill: `/awvision`
+
+## Use it in 30 seconds
+
+Ask a question about an image and get an answer.
+
+## Composes with
+
+- [awdk](https://aitherium.github.io/awdk/) — Build AI agent fleets — 3 lines, any backend, local or cloud.
+- [awbrowse](https://aitherium.github.io/awbrowse/) — A portable browser client — navigate, console, network, DOM, screenshot.
+- [awscreen](https://aitherium.github.io/awscreen/) — See this machine — what is on screen, and where to click it.
+- [awtax](https://aitherium.github.io/awtax/) — Turn any tax PDF -- returns, W-2, 1099, statements, even scans -- into structured data you can check.
+- [awdesk](https://aitherium.github.io/awdesk/) — Aither World Desk -- the desktop body of AitherOS Online: tray, avatars, decision cards, the Living Desktop as an overlay.
+- [awnode](https://aitherium.github.io/awnode/) — A lightweight local gateway — bridges your apps to the AI backends you chose.
+
+## Where it lives
+
+- Repo: https://github.com/Aitherium/awvision
+- Docs: https://aitherium.github.io/awvision/
+- Manifest (keys + the one-line adoption story): https://aitherium.github.io/awvision/aither-manifest.json
+
+This repository is mirrored from the AitherOS monorepo by `.github/workflows/sync-awvision.yml`; hand edits made here are overwritten on the next sync — change the source instead.
+
+Everything Aitherium, in one file for agents: https://aitherium.com/llms.txt
