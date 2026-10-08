@@ -26,6 +26,7 @@ Ask a question about an image and get an answer.
 - [awtax](https://aitherium.github.io/awtax/) — Turn any tax PDF -- returns, W-2, 1099, statements, even scans -- into structured data you can check.
 - [awdesk](https://aitherium.github.io/awdesk/) — Aither World Desk -- the desktop body of AitherOS Online: tray, avatars, decision cards, the Living Desktop as an overlay.
 - [awnode](https://aitherium.github.io/awnode/) — A lightweight local gateway — bridges your apps to the AI backends you chose.
+- [awcams](https://aitherium.github.io/awcams/) — Private camera recording and one-line event summaries, on storage you own.
 
 ## Where it lives
 
