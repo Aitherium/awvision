@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import socket
+import ssl
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -45,9 +46,52 @@ _VISION_MODELS = ("gemma4-12b", "bonsai2-27b")
 _resolved: dict = {}
 
 
+def config_path() -> Path:
+    """Host config file: ``AWVISION_CONFIG``, else ``~/.config/awvision/config.json``."""
+    env = os.getenv("AWVISION_CONFIG", "")
+    return Path(env) if env else Path.home() / ".config" / "awvision" / "config.json"
+
+
+def load_config() -> dict:
+    """``{"endpoint", "model", "ca_bundle"}`` from the host config file; ``{}`` when absent.
+
+    Precedence everywhere: CLI flag > ``AWVISION_*`` env > this file > auto-resolution.
+    A malformed file is an error, never silently ignored: the user wrote it on purpose.
+    """
+    p = config_path()
+    if not p.is_file():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"awvision config {p} is unreadable: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"awvision config {p} must be a JSON object")
+    return {k: str(v) for k, v in data.items() if k in ("endpoint", "model", "ca_bundle") and v}
+
+
+def ssl_context():
+    """TLS context for an https endpoint: verify against ``AWVISION_CA_BUNDLE`` (or the
+    config ``ca_bundle``) when one is named -- a private CA -- else the system store.
+    Verification is never turned off."""
+    ca = os.getenv("AWVISION_CA_BUNDLE", "") or load_config().get("ca_bundle", "")
+    if ca:
+        if not Path(ca).is_file():
+            raise RuntimeError(f"CA bundle {ca} does not exist")
+        return ssl.create_default_context(cafile=ca)
+    return ssl.create_default_context()
+
+
+def _open(target, timeout: float):
+    url = target if isinstance(target, str) else target.full_url
+    if url.startswith("https://"):
+        return urlopen(target, timeout=timeout, context=ssl_context())
+    return urlopen(target, timeout=timeout)
+
+
 def _list_models(endpoint: str, timeout: float = 10.0):
     try:
-        with urlopen(f"{endpoint.rstrip('/')}/v1/models", timeout=timeout) as r:
+        with _open(f"{endpoint.rstrip('/')}/v1/models", timeout=timeout) as r:
             data = json.loads(r.read().decode("utf-8"))
     except Exception:  # noqa: BLE001 - an unreachable candidate is simply skipped
         return None
@@ -60,7 +104,7 @@ def _list_models(endpoint: str, timeout: float = 10.0):
 
 
 def resolve_endpoint() -> str:
-    env = os.getenv("AWVISION_URL", "")
+    env = os.getenv("AWVISION_URL", "") or load_config().get("endpoint", "")
     if env:
         return env
     if "endpoint" not in _resolved:
@@ -74,7 +118,7 @@ def resolve_endpoint() -> str:
 
 
 def resolve_model(endpoint: str) -> str:
-    env = os.getenv("AWVISION_MODEL", "")
+    env = os.getenv("AWVISION_MODEL", "") or load_config().get("model", "")
     if env:
         return env
     if _resolved.get("endpoint") == endpoint:
@@ -195,7 +239,7 @@ def _make_vision_request(endpoint: str, model: str, payload: dict) -> str:
         method='POST'
     )
     try:
-        with urlopen(req, timeout=timeout) as response:
+        with _open(req, timeout=timeout) as response:
             response_data = json.loads(response.read().decode('utf-8'))
     except (TimeoutError, socket.timeout):
         raise RuntimeError(

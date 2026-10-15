@@ -34,13 +34,14 @@ def main():
     parser.add_argument(
         '--endpoint',
         default=None,
-        help='Vision API endpoint (env: AWVISION_URL, default: http://100.64.0.38:8124 '
-             '— fleet DGX gemma4-12b)'
+        help='Vision API endpoint (env: AWVISION_URL, then the "endpoint" in '
+             '~/.config/awvision/config.json, else the first local candidate that answers)'
     )
     parser.add_argument(
         '--model',
         default=None,
-        help='Model name (env: AWVISION_MODEL, default: gemma4-12b)'
+        help='Model name (env: AWVISION_MODEL, then the config "model", else the first '
+             'available vision model the endpoint lists)'
     )
 
     subparsers = parser.add_subparsers(dest='command', help='Command to run')
@@ -228,8 +229,10 @@ def run_self_test():
     # Test 5: Check endpoint configuration
     print("  [5/6] Endpoint configuration...", end=' ', flush=True)
     try:
-        endpoint = os.getenv('AWVISION_URL', 'http://100.64.0.38:8124')
-        model = os.getenv('AWVISION_MODEL', 'gemma4-12b')
+        from awvision.vision import load_config
+        cfg = load_config()
+        endpoint = os.getenv('AWVISION_URL', '') or cfg.get('endpoint') or '(auto)'
+        model = os.getenv('AWVISION_MODEL', '') or cfg.get('model') or '(auto)'
         assert endpoint, "Endpoint not configured"
         assert model, "Model not configured"
         print("ok")
@@ -249,7 +252,7 @@ def run_self_test():
 
     print()
     print("All self-tests passed!")
-    endpoint = os.getenv('AWVISION_URL', 'http://100.64.0.38:8124')
+    endpoint = os.getenv('AWVISION_URL', '') or '(auto-resolved; see --endpoint)'
     print(f"To use awvision, ensure a vision-capable service is running at {endpoint}")
     print()
     print("Examples:")

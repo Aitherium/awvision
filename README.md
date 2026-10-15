@@ -86,6 +86,16 @@ The defaults point at the AitherOS fleet's vision lane — gemma4-12b on the
 DGX Spark (`claude_bridge.yaml`). Point `AWVISION_URL` at any other
 OpenAI-compatible vision endpoint to override.
 
+Or write them once per host in `~/.config/awvision/config.json` (`AWVISION_CONFIG`
+names another file) -- a CLI flag beats the env, the env beats the file:
+
+```json
+{"endpoint": "https://127.0.0.1:8150", "model": "bonsai2-27b", "ca_bundle": "/path/to/private-ca.pem"}
+```
+
+`ca_bundle` (or `AWVISION_CA_BUNDLE`) verifies an https endpoint served under a private
+CA; without it the system trust store is used. Verification is never turned off.
+
 Or pass them as options:
 
 ```bash
