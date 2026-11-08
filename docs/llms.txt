@@ -10,10 +10,6 @@ An agent handed a screenshot, a scan or a photo has nothing to do with it. The i
 pip install awvision
 ```
 
-## In Claude Code
-
-- skill: `/awvision`
-
 ## Use it in 30 seconds
 
 Ask a question about an image and get an answer.
