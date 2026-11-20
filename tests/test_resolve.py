@@ -9,6 +9,7 @@ def _reset(monkeypatch, listing):
     monkeypatch.delenv("AWVISION_CA_BUNDLE", raising=False)
     monkeypatch.setenv("AWVISION_CONFIG", "/nonexistent/awvision-config.json")
     v._resolved.clear()
+    v._pinned.clear()
     monkeypatch.setattr(v, "_list_models", lambda ep, timeout=10.0: listing.get(ep))
 
 
@@ -24,6 +25,32 @@ def test_unreachable_everything_keeps_the_last_candidate(monkeypatch):
 
 def test_parked_gemma_falls_to_an_available_vision_model(monkeypatch):
     _reset(monkeypatch, {v._CANDIDATES[0]: {"gemma4-12b": False, "bonsai2-27b": True}})
+    ep = v.resolve_endpoint()
+    assert v.resolve_model(ep) == "bonsai2-27b"
+
+
+def test_default_order_starts_with_the_5090_27b_and_drops_gemma(monkeypatch):
+    assert v._VISION_MODELS == ("bonsai2-27b-5090", "bonsai2-27b")
+    assert "gemma4-12b" not in v._VISION_MODELS
+
+
+def test_default_order_prefers_the_5090_27b_over_a_live_gemma(monkeypatch):
+    _reset(monkeypatch, {v._CANDIDATES[0]: {"gemma4-12b": True,
+                                            "bonsai2-27b-5090": True}})
+    ep = v.resolve_endpoint()
+    assert v.resolve_model(ep) == "bonsai2-27b-5090"
+
+
+def test_pinned_resolver_picks_the_5090_27b(monkeypatch):
+    _reset(monkeypatch, {v._CANDIDATES[0]: {"gemma4-12b": True,
+                                            "bonsai2-27b-5090": True}})
+    assert v.resolve_pinned() == (v._CANDIDATES[0], "bonsai2-27b-5090")
+
+
+def test_explicit_model_env_overrides_the_default_order(monkeypatch):
+    _reset(monkeypatch, {v._CANDIDATES[0]: {"gemma4-12b": True,
+                                            "bonsai2-27b-5090": True}})
+    monkeypatch.setenv("AWVISION_MODEL", "bonsai2-27b")
     ep = v.resolve_endpoint()
     assert v.resolve_model(ep) == "bonsai2-27b"
 

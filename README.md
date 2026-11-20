@@ -78,19 +78,23 @@ watch at all.
 Set environment variables to customize the endpoint and model:
 
 ```bash
-export AWVISION_URL=http://100.64.0.38:8124
-export AWVISION_MODEL=gemma4-12b
+export AWVISION_URL=https://127.0.0.1:8150   # MicroScheduler
+export AWVISION_MODEL=bonsai2-27b-5090
 ```
 
-The defaults point at the AitherOS fleet's vision lane — gemma4-12b on the
-DGX Spark (`claude_bridge.yaml`). Point `AWVISION_URL` at any other
-OpenAI-compatible vision endpoint to override.
+The defaults auto-resolve: the first candidate that answers `/v1/models`, and
+`bonsai2-27b-5090` first on that endpoint (the canonical `bonsai2-27b` alias is the
+fallback). Measured 2026-11-20 on three UI crops: the 27B labelled roles (text/button)
+correctly where the 4B got them wrong, for 1-2 s more per crop. `gemma4-12b` is not in
+the default order — when tools are offered it answers with an empty message, and as a
+vision model it underperforms. Point `AWVISION_URL` at any other OpenAI-compatible
+vision endpoint to override.
 
 Or write them once per host in `~/.config/awvision/config.json` (`AWVISION_CONFIG`
 names another file) -- a CLI flag beats the env, the env beats the file:
 
 ```json
-{"endpoint": "https://127.0.0.1:8150", "model": "bonsai2-27b", "ca_bundle": "/path/to/private-ca.pem"}
+{"endpoint": "https://127.0.0.1:8150", "model": "bonsai2-27b-5090", "ca_bundle": "/path/to/private-ca.pem"}
 ```
 
 `ca_bundle` (or `AWVISION_CA_BUNDLE`) verifies an https endpoint served under a private
@@ -99,7 +103,7 @@ CA; without it the system trust store is used. Verification is never turned off.
 Or pass them as options:
 
 ```bash
-awvision --endpoint http://100.64.0.38:8124 --model gemma4-12b ask image.png "What's this?"
+awvision --endpoint https://127.0.0.1:8150 --model bonsai2-27b-5090 ask image.png "What's this?"
 ```
 
 ## Self-test

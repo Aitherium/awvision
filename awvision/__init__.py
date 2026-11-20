@@ -1,7 +1,16 @@
 """awvision - Ask questions about images using a vision-capable model."""
 
-__version__ = "0.3.2"
-__all__ = ["ask_vision", "describe_image", "compare_images"]
+__version__ = "0.3.3"
+__all__ = ["ask_vision", "describe_image", "compare_images",
+           "get_vision_response_b64", "resolve_pinned", "VisionUnavailable"]
+
+
+def __getattr__(name):
+    # Lazy re-exports: importing the package stays free of urllib/ssl setup.
+    if name in ("get_vision_response_b64", "resolve_pinned", "VisionUnavailable"):
+        from awvision import vision
+        return getattr(vision, name)
+    raise AttributeError(f"module 'awvision' has no attribute {name!r}")
 
 
 def ask_vision(image_path: str, question: str, endpoint=None, model=None):
@@ -10,8 +19,10 @@ def ask_vision(image_path: str, question: str, endpoint=None, model=None):
     Args:
         image_path: Path to the image file
         question: Question to ask about the image
-        endpoint: Vision API endpoint (default: env AWVISION_URL or http://100.64.0.38:8124)
-        model: Model name (default: env AWVISION_MODEL or gemma4-12b)
+        endpoint: Vision API endpoint (default: env AWVISION_URL or the first
+            auto-resolved candidate that answers /v1/models)
+        model: Model name (default: env AWVISION_MODEL or the resolver's first
+            available vision model, bonsai2-27b-5090)
 
     Returns:
         The model's response

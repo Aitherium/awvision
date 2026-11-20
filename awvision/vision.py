@@ -5,6 +5,7 @@ import json
 import os
 import socket
 import ssl
+import threading
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -42,7 +43,16 @@ def get_media_type(image_path: str) -> str:
 # so: AWVISION_URL if set, else the first candidate that answers /v1/models, and the
 # requested model if that endpoint serves it, else the first available vision model.
 _CANDIDATES = ("https://127.0.0.1:8150", "http://100.64.0.38:8124")
-_VISION_MODELS = ("gemma4-12b", "bonsai2-27b")
+# 2026-11-20 owner ruling: crop inspection defaults to Bonsai 2 27B on the 5090 --
+# on the same three UI crops it labelled roles correctly (text/button) where the 4B
+# got them wrong, for 1-2 s more per crop (1.3-2.6 s vs 0.5-1.5 s). gemma4-12b is
+# DROPPED from the default order: when tools are offered it answers with an EMPTY
+# message, and as a vision model it underperforms. Re-measured 2026-11-20 on one
+# SAVE-button crop: gemma4-12b -> HTTP 503 no_backend with an empty
+# choices[0].message.content (the lane is not live in pool-fast). bonsai2-27b is
+# the canonical alias of the same loaded 27B, kept so an older scheduler listing
+# still resolves to the right model.
+_VISION_MODELS = ("bonsai2-27b-5090", "bonsai2-27b")
 _resolved: dict = {}
 
 
@@ -67,7 +77,22 @@ def load_config() -> dict:
         raise RuntimeError(f"awvision config {p} is unreadable: {exc}") from exc
     if not isinstance(data, dict):
         raise RuntimeError(f"awvision config {p} must be a JSON object")
-    return {k: str(v) for k, v in data.items() if k in ("endpoint", "model", "ca_bundle") and v}
+    keys = ("endpoint", "model", "ca_bundle", "api_key_file")
+    return {k: str(v) for k, v in data.items() if k in keys and v}
+
+
+def _auth_headers() -> dict:
+    """``Authorization: Bearer <contents of api_key_file>`` when the host config names
+    one, else ``{}``. The value is read per request and never logged or echoed."""
+    keyfile = load_config().get("api_key_file", "")
+    if not keyfile:
+        return {}
+    p = Path(os.path.expanduser(keyfile))
+    try:
+        token = p.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise RuntimeError(f"awvision api_key_file {p} is unreadable: {exc.__class__.__name__}")
+    return {"Authorization": "Bearer " + token} if token else {}
 
 
 def ssl_context():
@@ -91,7 +116,8 @@ def _open(target, timeout: float):
 
 def _list_models(endpoint: str, timeout: float = 10.0):
     try:
-        with _open(f"{endpoint.rstrip('/')}/v1/models", timeout=timeout) as r:
+        req = Request(f"{endpoint.rstrip('/')}/v1/models", headers=_auth_headers())
+        with _open(req, timeout=timeout) as r:
             data = json.loads(r.read().decode("utf-8"))
     except Exception:  # noqa: BLE001 - an unreachable candidate is simply skipped
         return None
@@ -132,14 +158,85 @@ def resolve_model(endpoint: str) -> str:
     return _VISION_MODELS[0]
 
 
+class VisionUnavailable(RuntimeError):  # noqa: N818 - the public name callers catch
+    """No vision endpoint a caller may use answered. The message names what was tried."""
+
+
+_pin_lock = threading.Lock()
+_pinned: dict = {}
+
+
+def resolve_pinned(require_scheduler: bool = True):
+    """Resolve ``(endpoint, model)`` ONCE per process, under a lock, for a fan-out.
+
+    Eight threads asking at once cause one ``/v1/models`` probe, not eight. An explicit
+    ``AWVISION_URL`` or config ``endpoint`` is honoured as written. Otherwise only the
+    https scheduler candidates are probed when ``require_scheduler`` is set: the
+    plain-http mesh candidate is never a silent fallback for a caller sending pixels.
+    Raises VisionUnavailable (and remembers the failure) instead of returning a guess.
+    """
+    with _pin_lock:
+        # Keyed on what the caller could change between calls, so a new AWVISION_URL or
+        # config endpoint is honoured instead of a stale pin.
+        key = (bool(require_scheduler), os.getenv("AWVISION_URL", ""),
+               os.getenv("AWVISION_MODEL", ""), str(config_path()))
+        if key in _pinned:
+            hit = _pinned[key]
+            if isinstance(hit, VisionUnavailable):
+                raise hit
+            return hit
+        try:
+            result = _resolve_pinned_locked(require_scheduler)
+        except VisionUnavailable as exc:
+            _pinned[key] = exc
+            raise
+        _pinned[key] = result
+        return result
+
+
+def _resolve_pinned_locked(require_scheduler: bool):
+    explicit = os.getenv("AWVISION_URL", "") or load_config().get("endpoint", "")
+    if explicit:
+        endpoint = explicit.rstrip("/")
+        return endpoint, resolve_model(endpoint)
+    tried = []
+    for cand in _CANDIDATES:
+        if require_scheduler and not cand.startswith("https://"):
+            tried.append(cand + " (skipped: plain-http mesh fallback refused)")
+            continue
+        models = _list_models(cand)
+        if models is None:
+            tried.append(cand + " (no answer on /v1/models)")
+            continue
+        model = os.getenv("AWVISION_MODEL", "") or load_config().get("model", "")
+        if not model:
+            model = next((m for m in _VISION_MODELS if models.get(m)), "")
+        if not model:
+            raise VisionUnavailable(
+                f"{cand} answered but serves none of {list(_VISION_MODELS)} as available")
+        return cand, model
+    raise VisionUnavailable("no vision endpoint answered: " + "; ".join(tried)
+                            + ". Set AWVISION_URL or the awvision config endpoint.")
+
+
 def get_vision_response(image_path: str, question: str, endpoint=None, model=None):
     """Send image + question to vision model and get response."""
+    image_b64 = load_image_as_base64(image_path)
+    media_type = get_media_type(image_path)
+    return get_vision_response_b64(image_b64, media_type, question, endpoint, model)
+
+
+def get_vision_response_b64(image_b64: str, media_type: str, question: str,
+                            endpoint=None, model=None, *, max_tokens=None, timeout=None):
+    """Same as get_vision_response for an in-memory base64 image (a crop): no temp file.
+
+    ``max_tokens`` / ``timeout`` override AWVISION_MAX_TOKENS / AWVISION_TIMEOUT for this
+    one call, so a fan-out of small crops can ask for a short answer with a short fuse.
+    """
     if endpoint is None:
         endpoint = resolve_endpoint()
     if model is None:
         model = resolve_model(endpoint)
-    image_b64 = load_image_as_base64(image_path)
-    media_type = get_media_type(image_path)
     payload = {
         "model": model,
         "messages": [
@@ -160,7 +257,9 @@ def get_vision_response(image_path: str, question: str, endpoint=None, model=Non
             }
         ]
     }
-    return _make_vision_request(endpoint, model, payload)
+    if max_tokens:
+        payload["max_tokens"] = int(max_tokens)
+    return _make_vision_request(endpoint, model, payload, timeout=timeout)
 
 
 def compare_vision_images(image_a: str, image_b: str, endpoint=None, model=None):
@@ -217,7 +316,7 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-def _make_vision_request(endpoint: str, model: str, payload: dict) -> str:
+def _make_vision_request(endpoint: str, model: str, payload: dict, timeout=None) -> str:
     """Make a request to the vision API.
 
     A reasoning-capable vision model (Bonsai-2) thinks before it answers, so an
@@ -230,12 +329,13 @@ def _make_vision_request(endpoint: str, model: str, payload: dict) -> str:
     # image in 1 s with it off versus ~58 s on. AWVISION_THINKING=1 restores it.
     if os.getenv("AWVISION_THINKING", "") not in ("1", "true", "on", "yes"):
         payload.setdefault("chat_template_kwargs", {"enable_thinking": False})
-    timeout = _env_float("AWVISION_TIMEOUT", 180.0)
+    if timeout is None:
+        timeout = _env_float("AWVISION_TIMEOUT", 180.0)
     url = f"{endpoint}/v1/chat/completions"
     req = Request(
         url,
         data=json.dumps(payload).encode('utf-8'),
-        headers={'Content-Type': 'application/json'},
+        headers={'Content-Type': 'application/json', **_auth_headers()},
         method='POST'
     )
     try:

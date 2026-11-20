@@ -389,6 +389,46 @@ def capture_screen(out: str) -> str:
     return out
 
 
+def _monitor_origin(monitor: int = 1) -> tuple:
+    """Where the captured monitor's image pixel (0,0) sits on the desktop.
+
+    ``mss`` is the only thing awvision uses here that knows about more than one
+    monitor, and it is NOT a dependency: when it is absent (or refuses) this falls
+    back to the primary monitor, whose origin is (0,0) by definition. Never raises --
+    a capture that worked must not fail because its bookmark could not be read.
+    """
+    try:
+        import mss  # type: ignore[import-not-found]
+    except Exception:  # noqa: BLE001 - optional dependency
+        return (0, 0)
+    try:
+        with mss.mss() as sct:
+            m = sct.monitors[monitor]
+            return (int(m.get("left", 0)), int(m.get("top", 0)))
+    except Exception:  # noqa: BLE001 - a monitor map that cannot be read is not fatal
+        return (0, 0)
+
+
+def capture_screen_origin(out: str, monitor: int = 1) -> tuple:
+    """Capture a screen and report ``(path, (left, top))`` for the monitor captured.
+
+    With ``mss`` installed the monitor's real origin and its own pixels are used, so a
+    capture on a second monitor no longer reports (0,0). Without ``mss`` this is the
+    Pillow primary grab, whose origin is (0,0)."""
+    origin = _monitor_origin(monitor)
+    try:
+        import mss  # type: ignore[import-not-found]
+        from PIL import Image
+        with mss.mss() as sct:
+            m = sct.monitors[monitor]
+            shot = sct.grab(m)
+            Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX").save(
+                out, "JPEG", quality=80)
+        return out, origin
+    except Exception:  # noqa: BLE001 - any mss/PIL failure falls back to Pillow
+        return capture_screen(out), origin
+
+
 def ffmpeg_argv(source: str, out: str) -> list:
     """One frame from an RTSP URL or a capture device (``device:<name>``)."""
     if source.startswith("device:"):
@@ -491,7 +531,8 @@ def observe(source: str, args, *, prev_sig=None, publish_fn: Callable = publish,
     elif getattr(args, "keep_frames", False):
         # Asked to keep and could not: say so where a watcher looks, never silently.
         write_status(keeping=None, keep_refused=keep_reason)
-    model = getattr(args, "model", None) or os.environ.get("AWVISION_MODEL", "gemma4-12b")
+    model = (getattr(args, "model", None)
+             or os.environ.get("AWVISION_MODEL", "bonsai2-27b-5090"))
     if getattr(args, "publish", False) or getattr(args, "say", False):
         event = sight_event(text, source_kind=obs["source_kind"], node_id=_node_id(args),
                             sha256=obs["sha256"], model=model, latency_ms=latency_ms,
